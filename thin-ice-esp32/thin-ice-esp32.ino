@@ -54,10 +54,19 @@ TFT_eSprite spr_puffle = TFT_eSprite(&tft);
 uint8_t key_length = 4;
 TFT_eSprite *sprite_key[] = {
   &spr_oob,     // 0
-  &spr_border,  // 1
+  &spr_border,  // 1 needs to be 1 for boundary checking on movement
   &spr_intl,    // 2
   &spr_red,     // 3
-  &spr_intl,     // 4 puffle starting block
+  &spr_intl,    // 4 puffle starting block
+};
+
+const uint16_t* ice_break_stages[6] = {
+  ice_break_1_24x24,
+  ice_break_2_24x24,
+  ice_break_3_24x24,
+  ice_break_4_24x24,
+  ice_break_5_24x24,
+  ice_break_6_24x24,
 };
 
 /***************************************************************************************
@@ -130,7 +139,6 @@ void load_level(uint8_t lvl[][20]) {
       if (block_id == 2) { intl_tiles++; }
       if (block_id == 4) { 
         puffle_x = col; puffle_y = row; 
-        Serial.println("starting puffle at x y"); Serial.println(puffle_x); Serial.println(puffle_y);
       }
     }
   }
@@ -145,12 +153,17 @@ void move_down() {
   int block_1_x = puffle_x, block_1_y = puffle_y;
   int block_2_x = puffle_x, block_2_y = puffle_y+1;
   int target_y = puffle_y + 1;
+
+  Serial.println(block_2_x); Serial.println(block_2_y); Serial.println(lvl_map[block_2_x][block_2_y]);
+
+  // 1 is id of border block - can't move onto this block
+  if (lvl_map[block_2_y][block_2_x] == 1) { return; } 
   
-  for (int slide=0; slide<24; slide+=) {
+  for (int slide=0; slide<25; slide+=2) {
     spr_intl.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
     spr_intl.pushSprite(block_2_x*24, (block_2_y*24)+BARS_OFFSET);
     spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET+slide, TFT_GREEN);
-    Serial.println("moved puffle to x y"); Serial.println(puffle_x); Serial.println(puffle_y);
+    //Serial.println("moved puffle to x y"); Serial.println(puffle_x); Serial.println(puffle_y);
     delay(10);
   }
   puffle_y += 1;
@@ -161,7 +174,17 @@ void loop(void) {
   
   setup_sprites(sprite_key, key_length);
   load_level(lvl_1);
+
   move_down();
+  delay(1000);
+  move_down();
+  delay(1000);
+  move_down();
+  delay(1000);
+  move_down();
+  delay(1000);
+  move_down();
+  delay(1000);
 
   delay(60000);
 }
