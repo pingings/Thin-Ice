@@ -30,6 +30,7 @@ int puffle_x = 0;
 int puffle_y = 0;
 int intl_tiles = 0;
 uint8_t (*lvl_map)[20]; // use to refer back to and redraw the tiles when the puffle moves
+bool puffle_available = true;
 
 // for when the gameplay numbers are converted to strings so they can be displayed
 char lvl_num_str[4];
@@ -50,9 +51,10 @@ TFT_eSprite spr_intl = TFT_eSprite(&tft);
 TFT_eSprite spr_red = TFT_eSprite(&tft);
 TFT_eSprite spr_border = TFT_eSprite(&tft);
 TFT_eSprite spr_puffle = TFT_eSprite(&tft);
+TFT_eSprite spr_water = TFT_eSprite(&tft);
 
 uint8_t key_length = 4;
-TFT_eSprite *sprite_key[] = {
+TFT_eSprite *sprite_key[] = { // only for the sprites that can appear on the map arrays
   &spr_oob,     // 0
   &spr_border,  // 1 needs to be 1 for boundary checking on movement
   &spr_intl,    // 2
@@ -114,10 +116,17 @@ void setup_sprites(TFT_eSprite *sprites[], size_t num_sprites) {
     sprites[i]->createSprite(24, 24);
     sprites[i]->setSwapBytes(true);
   }
+
   spr_puffle.setColorDepth(16);
   spr_puffle.createSprite(24, 24);
   spr_puffle.setSwapBytes(true);
   spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_1_24x24);
+
+  spr_water.setColorDepth(16);
+  spr_water.createSprite(24, 24);
+  spr_water.setSwapBytes(true);
+  spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
+
   spr_oob.pushImage(0, 0, 24, 24, (uint16_t *)oob_block_24x24);
   spr_border.pushImage(0, 0, 24, 24, (uint16_t *)border_block_24x24);
   spr_intl.pushImage(0, 0, 24, 24, (uint16_t *)intl_block_24x24);
@@ -150,23 +159,50 @@ void load_level(uint8_t lvl[][20]) {
 
 void move_down() {
 
-  int block_1_x = puffle_x, block_1_y = puffle_y;
-  int block_2_x = puffle_x, block_2_y = puffle_y+1;
-  int target_y = puffle_y + 1;
+  if (puffle_available) { // e.g. if user is holding down buttons while the puffle is moving, just ignore it
 
-  Serial.println(block_2_x); Serial.println(block_2_y); Serial.println(lvl_map[block_2_x][block_2_y]);
+    puffle_available = false;
 
-  // 1 is id of border block - can't move onto this block
-  if (lvl_map[block_2_y][block_2_x] == 1) { return; } 
-  
-  for (int slide=0; slide<25; slide+=2) {
-    spr_intl.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
-    spr_intl.pushSprite(block_2_x*24, (block_2_y*24)+BARS_OFFSET);
-    spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET+slide, TFT_GREEN);
-    //Serial.println("moved puffle to x y"); Serial.println(puffle_x); Serial.println(puffle_y);
-    delay(10);
+    int block_1_x = puffle_x, block_1_y = puffle_y;
+    int block_2_x = puffle_x, block_2_y = puffle_y+1;
+    int target_y = puffle_y + 1;
+
+    //Serial.println(block_2_x); Serial.println(block_2_y); Serial.println(lvl_map[block_2_x][block_2_y]);
+
+    // 1 is id of border block - can't move onto this block
+    if (lvl_map[block_2_y][block_2_x] == 1) { return; } 
+
+    int ice_break_stage = 0;
+    
+    for (int slide=0; slide<25; slide+=2) {
+      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
+      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
+      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)ice_break_stages[slide/8]);
+      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET, TFT_BLACK);
+
+      spr_intl.pushSprite(block_2_x*24, (block_2_y*24)+BARS_OFFSET);
+      spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET+slide, TFT_GREEN);
+      //Serial.println("moved puffle to x y"); Serial.println(puffle_x); Serial.println(puffle_y);
+      delay(10);
+    }
+
+    puffle_y += 1;
+    puffle_available = true;
+
+    // finish breaking the tile into water - stages 4,5,6
+    // i havent separated the ice breaking and the puffle into different functions bc they 
+    // both need to relatively happen at precise times to avoid flickering 
+    for (int i=3; i<6; i++) {
+      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
+      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
+      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)ice_break_stages[i]);
+      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET, TFT_BLACK);
+      delay(60);
+    }
+    spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
+    spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
+
   }
-  puffle_y += 1;
 
 }
 
