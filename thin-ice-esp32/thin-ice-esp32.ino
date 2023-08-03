@@ -1,6 +1,3 @@
-// Set delay after plotting the sprite
-#define DELAY 30
-
 #include "sprites.h"
 #include "levels.h"
 #include <TFT_eSPI.h> 
@@ -10,6 +7,15 @@ TFT_eSPI    tft = TFT_eSPI();         // Declare object "tft"
 #define WHITE         0x217A5AD
 #define LIGHT_BLUE    0xDF9F
 #define DARK_BLUE     0x0339
+
+// pins for arrow buttons
+//const int btn_up_pin = 21;
+const int btn_down_pin = 21;
+const int btn_left_pin = 22;
+//const int btn_right_pin = 21;
+
+// flags for arrow buttons
+int btn_down_pressed = 0;
 
 // some measurements used for displaying elements
 const int DISP_WIDTH = 480;
@@ -28,9 +34,11 @@ int points = 0;
 // game vars
 int puffle_x = 0;
 int puffle_y = 0;
-int intl_tiles = 0;
 uint8_t (*lvl_map)[20]; // use to refer back to and redraw the tiles when the puffle moves
-bool puffle_available = true;
+
+// game flags
+int puffle_available = 0;
+int level_passed = 0;
 
 // for when the gameplay numbers are converted to strings so they can be displayed
 char lvl_num_str[4];
@@ -88,6 +96,9 @@ void setup() {
   tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
 
+  // arrow buttons
+  pinMode(btn_down_pin, INPUT);
+
   // bars and font setup
   tft.fillRect(0,0,DISP_WIDTH,BARS_OFFSET,LIGHT_BLUE); // top bar
   tft.fillRect(0,DISP_HEIGHT-BARS_OFFSET,DISP_WIDTH,BARS_OFFSET,LIGHT_BLUE); // bottom bar
@@ -106,8 +117,56 @@ void setup() {
   disp_write(TILES_TOTAL_X, TEXT_PADDING, itoa(tiles_total, tiles_total_str, 10));
   disp_write(SOLVED_X, TEXT_PADDING, itoa(solved, solved_str, 10));
   disp_write(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, itoa(points, points_str, 10));
+
   
 }
+
+void incr_tiles_melted() {
+    
+  tft.setTextColor(LIGHT_BLUE);
+  disp_write(TILES_MELTED_X, TEXT_PADDING, itoa(tiles_melted, tiles_melted_str, 10));
+  tiles_melted++;
+  tft.setTextColor(TFT_BLUE);
+  disp_write(TILES_MELTED_X, TEXT_PADDING, itoa(tiles_melted, tiles_melted_str, 10));
+}
+
+void incr_level_counter() {
+
+  tft.setTextColor(LIGHT_BLUE);
+  disp_write(LVL_NUM_X, TEXT_PADDING, itoa(lvl_num, lvl_num_str, 10));
+  lvl_num++;
+  tft.setTextColor(TFT_BLUE);
+  disp_write(LVL_NUM_X, TEXT_PADDING, itoa(lvl_num, lvl_num_str, 10));
+}
+
+void set_tiles_total(int tiles) {
+
+  tft.setTextColor(LIGHT_BLUE);
+  disp_write(TILES_TOTAL_X, TEXT_PADDING, itoa(tiles_total, tiles_total_str, 10));
+  tiles_total = tiles;
+  tft.setTextColor(TFT_BLUE);  
+  disp_write(TILES_TOTAL_X, TEXT_PADDING, itoa(tiles_total, tiles_total_str, 10));
+}
+
+void add_points(int to_add) {
+
+  tft.setTextColor(LIGHT_BLUE);
+  disp_write(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, itoa(points, points_str, 10));
+  points += to_add;
+  tft.setTextColor(TFT_BLUE);
+  disp_write(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, itoa(points, points_str, 10));
+
+}
+
+void incr_solved() {
+
+  tft.setTextColor(LIGHT_BLUE);
+  disp_write(SOLVED_X, TEXT_PADDING, itoa(solved, solved_str, 10));
+  solved++;
+  tft.setTextColor(TFT_BLUE);
+  disp_write(SOLVED_X, TEXT_PADDING, itoa(solved, solved_str, 10));
+}
+
 
 // TODO sort all this out!!
 void setup_sprites(TFT_eSprite *sprites[], size_t num_sprites) {
@@ -141,16 +200,22 @@ void load_level(uint8_t lvl[][20]) {
   lvl_map = lvl;
   
   // load the tiles onto the screen, while counting the meltable tiles
+  int tiles = 0;
   for (int row=0; row<11; row++) {
     for (int col=0; col<20; col++) {
       int block_id = lvl[row][col];
       sprite_key[block_id]->pushSprite(col*24, (row*24)+BARS_OFFSET);
-      if (block_id == 2) { intl_tiles++; }
+      if (block_id == 2) { tiles++; }
       if (block_id == 4) { 
         puffle_x = col; puffle_y = row; 
+        tiles++;
       }
     }
   }
+
+  // set/reset the game text
+  set_tiles_total(tiles);
+  incr_level_counter(); 
 
   // place the puffle
   spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN);
@@ -161,17 +226,17 @@ void move_down() {
 
   if (puffle_available) { // e.g. if user is holding down buttons while the puffle is moving, just ignore it
 
-    puffle_available = false;
+    puffle_available = 0;
 
     int block_1_x = puffle_x, block_1_y = puffle_y;
     int block_2_x = puffle_x, block_2_y = puffle_y+1;
     int target_y = puffle_y + 1;
 
-    //Serial.println(block_2_x); Serial.println(block_2_y); Serial.println(lvl_map[block_2_x][block_2_y]);
-
     // 1 is id of border block - can't move onto this block
     if (lvl_map[block_2_y][block_2_x] == 1) { return; } 
 
+    incr_tiles_melted();
+    add_points(1);
     int ice_break_stage = 0;
     
     for (int slide=0; slide<25; slide+=2) {
@@ -187,7 +252,7 @@ void move_down() {
     }
 
     puffle_y += 1;
-    puffle_available = true;
+    puffle_available = 1;
 
     // finish breaking the tile into water - stages 4,5,6
     // i havent separated the ice breaking and the puffle into different functions bc they 
@@ -207,20 +272,16 @@ void move_down() {
 }
 
 void loop(void) {
-  
+
+  // load level 1
   setup_sprites(sprite_key, key_length);
   load_level(lvl_1);
+  level_passed = 0;
+  puffle_available = 1;
+  
+  while (level_passed != 1) {
+    btn_down_pressed = digitalRead(btn_down_pin);
+    if (btn_down_pressed) { move_down(); }
+  }
 
-  move_down();
-  delay(1000);
-  move_down();
-  delay(1000);
-  move_down();
-  delay(1000);
-  move_down();
-  delay(1000);
-  move_down();
-  delay(1000);
-
-  delay(60000);
 }
