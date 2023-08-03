@@ -1,12 +1,17 @@
 #include "sprites.h"
 #include "levels.h"
 #include <TFT_eSPI.h> 
+#include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 TFT_eSPI    tft = TFT_eSPI();         // Declare object "tft"
 
 #define BLACK         0x0000
 #define WHITE         0x217A5AD
 #define LIGHT_BLUE    0xDF9F
 #define DARK_BLUE     0x0339
+
+TaskHandle_t puffleAnimationTaskHandle;
 
 // pins for arrow buttons
 //const int btn_up_pin = 21;
@@ -41,11 +46,7 @@ int puffle_available = 0;
 int level_passed = 0;
 
 // for when the gameplay numbers are converted to strings so they can be displayed
-char lvl_num_str[4];
-char tiles_melted_str[4];
-char tiles_total_str[4];
-char solved_str[4];
-char points_str[4];
+char temp_str[4];
 
 // where to put text when it gets updated
 int LVL_NUM_X = 105;
@@ -79,8 +80,29 @@ const uint16_t* ice_break_stages[6] = {
   ice_break_6_24x24,
 };
 
+const uint16_t* puffle_anim_stages[3] = {
+  puffle_1_24x24,
+  puffle_2_24x24,
+  puffle_3_24x24,
+};
+
 /***************************************************************************************
 ***************************************************************************************/
+
+void task_puffle_animation(void *parameter) {
+  while (1) {
+    spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_1_24x24);
+    spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_2_24x24);
+    spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_3_24x24);
+    spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN);
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+
+}
 
 void disp_write(uint16_t x, uint16_t y, char text[]) {
   tft.setCursor(x,y);
@@ -112,59 +134,43 @@ void setup() {
   disp_write(340, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, "POINTS"); 
 
   // write the var text
-  disp_write(LVL_NUM_X, TEXT_PADDING, itoa(lvl_num, lvl_num_str, 10));
-  disp_write(TILES_MELTED_X, TEXT_PADDING, itoa(tiles_melted, tiles_melted_str, 10));
-  disp_write(TILES_TOTAL_X, TEXT_PADDING, itoa(tiles_total, tiles_total_str, 10));
-  disp_write(SOLVED_X, TEXT_PADDING, itoa(solved, solved_str, 10));
-  disp_write(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, itoa(points, points_str, 10));
+  disp_write(LVL_NUM_X, TEXT_PADDING, itoa(lvl_num, temp_str, 10));
+  disp_write(TILES_MELTED_X, TEXT_PADDING, itoa(tiles_melted, temp_str, 10));
+  disp_write(TILES_TOTAL_X, TEXT_PADDING, itoa(tiles_total, temp_str, 10));
+  disp_write(SOLVED_X, TEXT_PADDING, itoa(solved, temp_str, 10));
+  disp_write(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, itoa(points, temp_str, 10));
+
+  xTaskCreate(task_puffle_animation, "PuffleAnimation", 2048, NULL, 1, &puffleAnimationTaskHandle);
 
   
 }
 
-void incr_tiles_melted() {
-    
+void update_display(int x, int y, int *var, int new_val) {
   tft.setTextColor(LIGHT_BLUE);
-  disp_write(TILES_MELTED_X, TEXT_PADDING, itoa(tiles_melted, tiles_melted_str, 10));
-  tiles_melted++;
+  disp_write(x, y, itoa(*var, temp_str, 10));
+  *var = new_val;
   tft.setTextColor(TFT_BLUE);
-  disp_write(TILES_MELTED_X, TEXT_PADDING, itoa(tiles_melted, tiles_melted_str, 10));
+  disp_write(x, y, itoa(*var, temp_str, 10));
+}
+
+void incr_tiles_melted() {
+  update_display(TILES_MELTED_X, TEXT_PADDING, &tiles_melted, tiles_melted+1);
 }
 
 void incr_level_counter() {
-
-  tft.setTextColor(LIGHT_BLUE);
-  disp_write(LVL_NUM_X, TEXT_PADDING, itoa(lvl_num, lvl_num_str, 10));
-  lvl_num++;
-  tft.setTextColor(TFT_BLUE);
-  disp_write(LVL_NUM_X, TEXT_PADDING, itoa(lvl_num, lvl_num_str, 10));
+  update_display(LVL_NUM_X, TEXT_PADDING, &lvl_num, lvl_num+1);
 }
 
 void set_tiles_total(int tiles) {
-
-  tft.setTextColor(LIGHT_BLUE);
-  disp_write(TILES_TOTAL_X, TEXT_PADDING, itoa(tiles_total, tiles_total_str, 10));
-  tiles_total = tiles;
-  tft.setTextColor(TFT_BLUE);  
-  disp_write(TILES_TOTAL_X, TEXT_PADDING, itoa(tiles_total, tiles_total_str, 10));
+  update_display(TILES_TOTAL_X, TEXT_PADDING, &tiles_total, tiles);
 }
 
 void add_points(int to_add) {
-
-  tft.setTextColor(LIGHT_BLUE);
-  disp_write(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, itoa(points, points_str, 10));
-  points += to_add;
-  tft.setTextColor(TFT_BLUE);
-  disp_write(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, itoa(points, points_str, 10));
-
+  update_display(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, &points, to_add);
 }
 
 void incr_solved() {
-
-  tft.setTextColor(LIGHT_BLUE);
-  disp_write(SOLVED_X, TEXT_PADDING, itoa(solved, solved_str, 10));
-  solved++;
-  tft.setTextColor(TFT_BLUE);
-  disp_write(SOLVED_X, TEXT_PADDING, itoa(solved, solved_str, 10));
+  update_display(SOLVED_X, TEXT_PADDING, &solved, solved+1);
 }
 
 
