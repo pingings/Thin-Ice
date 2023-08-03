@@ -11,7 +11,7 @@ TFT_eSPI    tft = TFT_eSPI();         // Declare object "tft"
 #define LIGHT_BLUE    0xDF9F
 #define DARK_BLUE     0x0339
 
-TaskHandle_t puffleAnimationTaskHandle;
+TaskHandle_t animation_tasks_handle;
 
 // pins for arrow buttons
 //const int btn_up_pin = 21;
@@ -41,9 +41,13 @@ int puffle_x = 0;
 int puffle_y = 0;
 uint8_t (*lvl_map)[20]; // use to refer back to and redraw the tiles when the puffle moves
 
-// game flags
+// game and animation flags/vars
 int puffle_available = 0;
+int target_tile_x = 0;
+int target_tile_y = 0;
 int level_passed = 0;
+int slide_x = 0;
+int slide_y = 0;
 
 // for when the gameplay numbers are converted to strings so they can be displayed
 char temp_str[4];
@@ -80,34 +84,206 @@ const uint16_t* ice_break_stages[6] = {
   ice_break_6_24x24,
 };
 
-const uint16_t* puffle_anim_stages[3] = {
+const uint16_t* puffle_frames[3] = {
   puffle_1_24x24,
   puffle_2_24x24,
   puffle_3_24x24,
 };
+int puffle_frame = 0;
+
+
+struct melting_tile {
+  int x;
+  int y;
+  int lifetime;
+};
+
+const int MAX_MELTING_TILES = 2;
+struct melting_tile melting_tiles[MAX_MELTING_TILES] = {
+  {0,0,0},
+  {0,0,0},
+};
+void new_melting_tile(int new_x, int new_y) {
+  for (int i=0; i<MAX_MELTING_TILES; i++) {
+    if (melting_tiles[i].lifetime == 0)  {
+      melting_tiles[i].x = new_x;
+      melting_tiles[i].y = new_y;
+      melting_tiles[i].lifetime = 1000;
+      break; // IMPORTANT in case they are both 0!
+    }
+  }
+}
+
 
 /***************************************************************************************
+Functions for updating the numbers  
 ***************************************************************************************/
-
-void task_puffle_animation(void *parameter) {
-  while (1) {
-    spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_1_24x24);
-    spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_2_24x24);
-    spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_3_24x24);
-    spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN);
-    vTaskDelay(pdMS_TO_TICKS(200));
-  }
-
-}
 
 void disp_write(uint16_t x, uint16_t y, char text[]) {
   tft.setCursor(x,y);
   tft.println(text);
 }
+
+void update_display(int x, int y, int *var, int new_val) {
+  tft.setTextColor(LIGHT_BLUE);
+  disp_write(x, y, itoa(*var, temp_str, 10));
+  *var = new_val;
+  tft.setTextColor(TFT_BLUE);
+  disp_write(x, y, itoa(*var, temp_str, 10));
+}
+
+void incr_tiles_melted() {
+  update_display(TILES_MELTED_X, TEXT_PADDING, &tiles_melted, tiles_melted+1);
+}
+
+void incr_level_counter() {
+  update_display(LVL_NUM_X, TEXT_PADDING, &lvl_num, lvl_num+1);
+}
+
+void set_tiles_total(int tiles) {
+  update_display(TILES_TOTAL_X, TEXT_PADDING, &tiles_total, tiles);
+}
+
+void add_points(int to_add) {
+  update_display(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, &points, to_add);
+}
+
+void incr_solved() {
+  update_display(SOLVED_X, TEXT_PADDING, &solved, solved+1);
+}
+
+/***************************************************************************************
+Function for handling animation
+On each refresh:
+- the puffle frame always changes
+- the puffle's current tile is always changed
+- the puffle might be moving
+- some ice blocks might be breaking
+- some water, keys etc might be animated
+***************************************************************************************/
+
+void animation_tasks(void *parameter) {
+  while (1) {
+
+    // refresh the target tile to overwrite the puffle's current frame
+    // if the puffle is stationary then this is the tile it's stood on
+    // if the puffle is moving then this is the tile it's moving onto
+    spr_intl.pushSprite(target_tile_x*24, (target_tile_y*24)+BARS_OFFSET);
+
+    // deal with any melting tiles
+    for (int i=0; i<MAX_MELTING_TILES; i++) {
+      if (melting_tiles[i].lifetime != 0)  {
+        // decide where in the melting process it is, update frame if necessary, decrease lifetime by some amount
+      }
+    }
+
+    // place the puffle, factoring in any movement
+    // might just need 3 instead of 5 clauses
+    if (slide_x < 0) {}
+    else if (slide_x > 0) {}
+    else if (slide_y < 0) {}
+    
+    // moving down
+    else if (slide_y > 0) { 
+      spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET+slide_y, TFT_GREEN); 
+      slide_y -= 1;
+    }
+
+    else {
+      spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN); 
+      puffle_available = 1;
+    }
+    
+
+    // load the puffle's next frame
+    puffle_frame = (puffle_frame+1) % 2;
+    spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_frames[puffle_frame]);
+    spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN);
+
+    // finally, wait
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+
+}
+
+/***************************************************************************************
+Functions for handling movement
+***************************************************************************************/
+
+void down_pressed() {
+
+  if (puffle_available) { // e.g. if user is holding down buttons while the puffle is moving, just ignore it
+
+    // check the propsed new tile - 1 is id of border block - can't move onto this block
+    if (lvl_map[puffle_y+1][puffle_x] == 1) { return; } 
+
+    // don't process further arrow key presses for now
+    puffle_available = 0;
+
+    // the animation task will now constantly rewrite this tile under the puffle
+    target_tile_x = puffle_x;
+    target_tile_y = puffle_y + 1;
+
+    // the animation task will now handle this tile melting
+    new_melting_tile(puffle_x, puffle_y);
+
+    // the animation task will now handle the puffle gradually moving down
+    slide_y = 25;
+
+    // (the animation task will set puffle_available = 1 when the slide_y is 0 again)
+
+    // game var stuff
+    incr_tiles_melted();
+    add_points(1);
+
+    /*
+
+    int block_1_x = puffle_x, block_1_y = puffle_y;
+    int block_2_x = puffle_x, block_2_y = puffle_y+1;
+    int target_y = puffle_y + 1;
+
+
+    int ice_break_stage = 0;
+    
+    for (int slide=0; slide<25; slide+=2) {
+      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
+      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
+      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)ice_break_stages[slide/8]);
+      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET, TFT_BLACK);
+
+      spr_intl.pushSprite(block_2_x*24, (block_2_y*24)+BARS_OFFSET);
+      spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET+slide, TFT_GREEN);
+      delay(10);
+    }
+
+    puffle_y += 1;
+    puffle_available = 1;
+
+    // finish breaking the tile into water - stages 4,5,6
+    // i havent separated the ice breaking and the puffle into different functions bc they 
+    // both need to relatively happen at precise times to avoid flickering 
+    for (int i=3; i<6; i++) {
+      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
+      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
+      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)ice_break_stages[i]);
+      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET, TFT_BLACK);
+      delay(60);
+    }
+    spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
+    spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
+
+    */
+
+  }
+
+}
+
+
+
+/***************************************************************************************
+Functions for setup
+***************************************************************************************/
+
 
 void setup() {
 
@@ -140,39 +316,10 @@ void setup() {
   disp_write(SOLVED_X, TEXT_PADDING, itoa(solved, temp_str, 10));
   disp_write(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, itoa(points, temp_str, 10));
 
-  xTaskCreate(task_puffle_animation, "PuffleAnimation", 2048, NULL, 1, &puffleAnimationTaskHandle);
+  xTaskCreate(animation_tasks, "animation_tasks", 4096, NULL, 1, &animation_tasks_handle);
 
   
 }
-
-void update_display(int x, int y, int *var, int new_val) {
-  tft.setTextColor(LIGHT_BLUE);
-  disp_write(x, y, itoa(*var, temp_str, 10));
-  *var = new_val;
-  tft.setTextColor(TFT_BLUE);
-  disp_write(x, y, itoa(*var, temp_str, 10));
-}
-
-void incr_tiles_melted() {
-  update_display(TILES_MELTED_X, TEXT_PADDING, &tiles_melted, tiles_melted+1);
-}
-
-void incr_level_counter() {
-  update_display(LVL_NUM_X, TEXT_PADDING, &lvl_num, lvl_num+1);
-}
-
-void set_tiles_total(int tiles) {
-  update_display(TILES_TOTAL_X, TEXT_PADDING, &tiles_total, tiles);
-}
-
-void add_points(int to_add) {
-  update_display(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, &points, to_add);
-}
-
-void incr_solved() {
-  update_display(SOLVED_X, TEXT_PADDING, &solved, solved+1);
-}
-
 
 // TODO sort all this out!!
 void setup_sprites(TFT_eSprite *sprites[], size_t num_sprites) {
@@ -197,6 +344,7 @@ void setup_sprites(TFT_eSprite *sprites[], size_t num_sprites) {
   spr_intl.pushImage(0, 0, 24, 24, (uint16_t *)intl_block_24x24);
   spr_red.pushImage(0, 0, 24, 24, (uint16_t *)red_block_24x24);
 }
+
 
 // given a level number, 
 // TODO make this actually a pointer again
@@ -228,55 +376,6 @@ void load_level(uint8_t lvl[][20]) {
 
 }
 
-void move_down() {
-
-  if (puffle_available) { // e.g. if user is holding down buttons while the puffle is moving, just ignore it
-
-    puffle_available = 0;
-
-    int block_1_x = puffle_x, block_1_y = puffle_y;
-    int block_2_x = puffle_x, block_2_y = puffle_y+1;
-    int target_y = puffle_y + 1;
-
-    // 1 is id of border block - can't move onto this block
-    if (lvl_map[block_2_y][block_2_x] == 1) { return; } 
-
-    incr_tiles_melted();
-    add_points(1);
-    int ice_break_stage = 0;
-    
-    for (int slide=0; slide<25; slide+=2) {
-      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
-      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
-      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)ice_break_stages[slide/8]);
-      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET, TFT_BLACK);
-
-      spr_intl.pushSprite(block_2_x*24, (block_2_y*24)+BARS_OFFSET);
-      spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET+slide, TFT_GREEN);
-      //Serial.println("moved puffle to x y"); Serial.println(puffle_x); Serial.println(puffle_y);
-      delay(10);
-    }
-
-    puffle_y += 1;
-    puffle_available = 1;
-
-    // finish breaking the tile into water - stages 4,5,6
-    // i havent separated the ice breaking and the puffle into different functions bc they 
-    // both need to relatively happen at precise times to avoid flickering 
-    for (int i=3; i<6; i++) {
-      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
-      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
-      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)ice_break_stages[i]);
-      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET, TFT_BLACK);
-      delay(60);
-    }
-    spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
-    spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
-
-  }
-
-}
-
 void loop(void) {
 
   // load level 1
@@ -287,7 +386,7 @@ void loop(void) {
   
   while (level_passed != 1) {
     btn_down_pressed = digitalRead(btn_down_pin);
-    if (btn_down_pressed) { move_down(); }
+    if (btn_down_pressed) { down_pressed(); }
   }
 
 }
