@@ -21,6 +21,7 @@ const int btn_left_pin = 22;
 
 // flags for arrow buttons
 int btn_down_pressed = 0;
+int btn_left_pressed = 0;
 
 // some measurements used for displaying elements
 const int DISP_WIDTH = 480;
@@ -50,7 +51,7 @@ int slide_x = 0;
 int slide_y = 0;
 
 // display refresh things
-int DISP_REFRESH_RATE = 20;
+int DISP_REFRESH_RATE = 10;
 int puffle_anim_rate = 100;
 int puffle_anim_counter = 0;
 int puffle_speed = 80;
@@ -166,7 +167,7 @@ void animation_tasks(void *parameter) {
   while (1) {
 
     puffle_anim_counter += DISP_REFRESH_RATE;
-    puffle_speed_counter += DISP_REFRESH_RATE;
+    //puffle_speed_counter += DISP_REFRESH_RATE;
 
     // refresh the target tile to overwrite the puffle's current frame
     // if the puffle is stationary then this is the tile it's stood on
@@ -212,11 +213,17 @@ void animation_tasks(void *parameter) {
     //if (puffle_speed_counter >= puffle_speed) {
 
       // moving left
-      if (slide_x < 0) {}
+      if (slide_x < 0) {
+        spr_puffle.pushSprite((puffle_x*24)-(25+slide_x), (puffle_y*24)+BARS_OFFSET, TFT_GREEN); 
+        slide_x += 1;
+      }
+
       // moving right
       else if (slide_x > 0) {}
+
       // moving up
       else if (slide_y < 0) {}
+
       // moving down
       else if (slide_y > 0) { 
         spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET+(25-slide_y), TFT_GREEN); 
@@ -271,6 +278,31 @@ void animation_tasks(void *parameter) {
 Functions for handling movement
 ***************************************************************************************/
 
+void left_pressed() {
+
+  if (puffle_available) {
+    if (lvl_map[puffle_y][puffle_x-1] == 1) { return; }
+    puffle_available = 0;
+
+    // the animation task will now constantly rewrite this tile under the puffle
+    target_tile_x = puffle_x - 1;
+    target_tile_y = puffle_y;
+
+    // the animation task will now handle this tile melting
+    new_melting_tile(puffle_x, puffle_y);
+    Serial.println("new melting tile added"); Serial.println(puffle_x); Serial.println(puffle_y);
+
+    // the animation task will now handle the puffle gradually moving down
+    slide_x = -25;
+
+    // game var stuff - anim task will handle this
+    updates.incr_melted = 1;
+    updates.add_points = 1;
+
+  }
+
+}
+
 void down_pressed() {
 
   if (puffle_available) { // e.g. if user is holding down buttons while the puffle is moving, just ignore it
@@ -296,44 +328,6 @@ void down_pressed() {
     // game var stuff - anim task will handle this
     updates.incr_melted = 1;
     updates.add_points = 1;
-
-    /*
-
-    int block_1_x = puffle_x, block_1_y = puffle_y;
-    int block_2_x = puffle_x, block_2_y = puffle_y+1;
-    int target_y = puffle_y + 1;
-
-
-    int ice_break_stage = 0;
-    
-    for (int slide=0; slide<25; slide+=2) {
-      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
-      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
-      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)ice_break_stages[slide/8]);
-      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET, TFT_BLACK);
-
-      spr_intl.pushSprite(block_2_x*24, (block_2_y*24)+BARS_OFFSET);
-      spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET+slide, TFT_GREEN);
-      delay(10);
-    }
-
-    puffle_y += 1;
-    puffle_available = 1;
-
-    // finish breaking the tile into water - stages 4,5,6
-    // i havent separated the ice breaking and the puffle into different functions bc they 
-    // both need to relatively happen at precise times to avoid flickering 
-    for (int i=3; i<6; i++) {
-      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
-      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
-      spr_water.pushImage(0, 0, 24, 24, (uint16_t *)ice_break_stages[i]);
-      spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET, TFT_BLACK);
-      delay(60);
-    }
-    spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
-    spr_water.pushSprite(block_1_x*24, (block_1_y*24)+BARS_OFFSET);
-
-    */
 
   }
 
@@ -457,6 +451,8 @@ void loop(void) {
   while (level_passed != 1) {
     btn_down_pressed = digitalRead(btn_down_pin);
     if (btn_down_pressed) { down_pressed(); }
+    btn_left_pressed = digitalRead(btn_left_pin);
+    if (btn_left_pressed) { left_pressed(); }
   }
 
 }
