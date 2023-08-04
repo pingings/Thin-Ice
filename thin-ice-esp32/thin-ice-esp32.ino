@@ -49,6 +49,14 @@ int level_passed = 0;
 int slide_x = 0;
 int slide_y = 0;
 
+// display refresh things
+int DISP_REFRESH_RATE = 20;
+int puffle_anim_rate = 100;
+int puffle_anim_counter = 0;
+int puffle_speed = 80;
+int puffle_speed_counter = 0;
+const int MELTING_TILE_LIFETIME = 400; // overall time a tile takes to melt
+
 // for when the gameplay numbers are converted to strings so they can be displayed
 char temp_str[4];
 
@@ -96,24 +104,34 @@ struct melting_tile {
   int x;
   int y;
   int lifetime;
+  bool active;
 };
-
 const int MAX_MELTING_TILES = 2;
 struct melting_tile melting_tiles[MAX_MELTING_TILES] = {
-  {0,0,0},
-  {0,0,0},
+  {0,0,0,0},
+  {0,0,0,0},
 };
 void new_melting_tile(int new_x, int new_y) {
   for (int i=0; i<MAX_MELTING_TILES; i++) {
-    if (melting_tiles[i].lifetime == 0)  {
+    if (melting_tiles[i].active == 0)  {
       melting_tiles[i].x = new_x;
       melting_tiles[i].y = new_y;
-      melting_tiles[i].lifetime = 1000;
+      melting_tiles[i].lifetime = 0;
+      melting_tiles[i].active = 1;
       break; // IMPORTANT in case they are both 0!
     }
   }
 }
 
+// ALL lcd changed are handled by the animation tasks thread, otherwise it crashes
+struct stat_updates {
+  int add_points;
+  bool incr_melted;
+  bool incr_lvl;
+  bool incr_solved;
+  int set_total_tiles;
+};
+struct stat_updates updates = {0,0,0,0,0};
 
 /***************************************************************************************
 Functions for updating the numbers  
@@ -132,25 +150,6 @@ void update_display(int x, int y, int *var, int new_val) {
   disp_write(x, y, itoa(*var, temp_str, 10));
 }
 
-void incr_tiles_melted() {
-  update_display(TILES_MELTED_X, TEXT_PADDING, &tiles_melted, tiles_melted+1);
-}
-
-void incr_level_counter() {
-  update_display(LVL_NUM_X, TEXT_PADDING, &lvl_num, lvl_num+1);
-}
-
-void set_tiles_total(int tiles) {
-  update_display(TILES_TOTAL_X, TEXT_PADDING, &tiles_total, tiles);
-}
-
-void add_points(int to_add) {
-  update_display(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, &points, to_add);
-}
-
-void incr_solved() {
-  update_display(SOLVED_X, TEXT_PADDING, &solved, solved+1);
-}
 
 /***************************************************************************************
 Function for handling animation
@@ -163,7 +162,11 @@ On each refresh:
 ***************************************************************************************/
 
 void animation_tasks(void *parameter) {
+
   while (1) {
+
+    puffle_anim_counter += DISP_REFRESH_RATE;
+    puffle_speed_counter += DISP_REFRESH_RATE;
 
     // refresh the target tile to overwrite the puffle's current frame
     // if the puffle is stationary then this is the tile it's stood on
@@ -172,38 +175,96 @@ void animation_tasks(void *parameter) {
 
     // deal with any melting tiles
     for (int i=0; i<MAX_MELTING_TILES; i++) {
-      if (melting_tiles[i].lifetime != 0)  {
-        // decide where in the melting process it is, update frame if necessary, decrease lifetime by some amount
+      if (melting_tiles[i].active = 1) {
+
+        // active tile is still melting
+        if (melting_tiles[i].lifetime < MELTING_TILE_LIFETIME)  {
+
+          // decide where in the melting process it is,
+          int stage = ((float)melting_tiles[i].lifetime/(float)MELTING_TILE_LIFETIME) * 6;
+
+          // load the correct frame and push it (over the water), increase lifetime
+          spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
+          spr_water.pushSprite(melting_tiles[i].x*24, (melting_tiles[i].y*24)+BARS_OFFSET);
+          spr_water.pushImage(0, 0, 24, 24, (uint16_t *)ice_break_stages[stage]);
+          spr_water.pushSprite(melting_tiles[i].x*24, (melting_tiles[i].y*24)+BARS_OFFSET, TFT_BLACK);
+          melting_tiles[i].lifetime += DISP_REFRESH_RATE;
+          
+        // active tile has actually finished melting
+        } else {
+          spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
+          spr_water.pushSprite(melting_tiles[i].x*24, (melting_tiles[i].y*24)+BARS_OFFSET);
+          melting_tiles[i].active = 0;
+        }
       }
     }
 
-    // place the puffle, factoring in any movement
+    // load the puffle's next frame if it's time
+    if (puffle_anim_counter >= puffle_anim_rate) {
+      puffle_frame = (puffle_frame+1) % 3;
+      spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_frames[puffle_frame]);
+      puffle_anim_counter = 0;
+    }
+
+
+    // place the puffle, factoring in any movement, if it's time
     // might just need 3 instead of 5 clauses
-    if (slide_x < 0) {}
-    else if (slide_x > 0) {}
-    else if (slide_y < 0) {}
-    
-    // moving down
-    else if (slide_y > 0) { 
-      spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET+slide_y, TFT_GREEN); 
-      slide_y -= 1;
-    }
+    //if (puffle_speed_counter >= puffle_speed) {
 
-    else {
-      spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN); 
-      puffle_available = 1;
-    }
-    
+      // moving left
+      if (slide_x < 0) {}
+      // moving right
+      else if (slide_x > 0) {}
+      // moving up
+      else if (slide_y < 0) {}
+      // moving down
+      else if (slide_y > 0) { 
+        spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET+(25-slide_y), TFT_GREEN); 
+        slide_y -= 1;
+      }
 
-    // load the puffle's next frame
-    puffle_frame = (puffle_frame+1) % 2;
-    spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_frames[puffle_frame]);
-    spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN);
+      else {
+
+        // if there's no current movement, but the puffle position isn't the target position,
+        // then it has only just reached its target, so we need to update the puffle's position
+        if (puffle_x != target_tile_x) {puffle_x = target_tile_x;}
+        if (puffle_y != target_tile_y) {puffle_y = target_tile_y;}
+        if (!puffle_available) { puffle_available = 1; }
+        spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN); 
+        
+      }
+
+    //  puffle_speed_counter = 0;
+
+    //}
+
+
+    // perform any stats changes
+    if (updates.add_points > 0) { 
+      update_display(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, &points, updates.add_points);
+      updates.add_points = 0;
+    }
+    if (updates.incr_melted) {
+      update_display(TILES_MELTED_X, TEXT_PADDING, &tiles_melted, tiles_melted+1);
+      updates.incr_melted = 0;
+    }
+    if (updates.incr_lvl) {
+      update_display(LVL_NUM_X, TEXT_PADDING, &lvl_num, lvl_num+1);
+      updates.incr_lvl = 0;
+    }
+    if (updates.incr_solved) {
+      update_display(SOLVED_X, TEXT_PADDING, &solved, solved+1);
+      updates.incr_solved = 0;
+    }
+    if (updates.set_total_tiles != 0) {
+      update_display(TILES_TOTAL_X, TEXT_PADDING, &tiles_total, updates.set_total_tiles);
+      updates.set_total_tiles = 0;
+    }
 
     // finally, wait
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
+    vTaskDelay(pdMS_TO_TICKS(DISP_REFRESH_RATE));
 
+  }
 }
 
 /***************************************************************************************
@@ -218,6 +279,7 @@ void down_pressed() {
     if (lvl_map[puffle_y+1][puffle_x] == 1) { return; } 
 
     // don't process further arrow key presses for now
+    // (the animation task will set puffle_available = 1 when the slide_y is 0 again)
     puffle_available = 0;
 
     // the animation task will now constantly rewrite this tile under the puffle
@@ -226,15 +288,14 @@ void down_pressed() {
 
     // the animation task will now handle this tile melting
     new_melting_tile(puffle_x, puffle_y);
+    Serial.println("new melting tile added"); Serial.println(puffle_x); Serial.println(puffle_y);
 
     // the animation task will now handle the puffle gradually moving down
     slide_y = 25;
 
-    // (the animation task will set puffle_available = 1 when the slide_y is 0 again)
-
-    // game var stuff
-    incr_tiles_melted();
-    add_points(1);
+    // game var stuff - anim task will handle this
+    updates.incr_melted = 1;
+    updates.add_points = 1;
 
     /*
 
@@ -316,7 +377,8 @@ void setup() {
   disp_write(SOLVED_X, TEXT_PADDING, itoa(solved, temp_str, 10));
   disp_write(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, itoa(points, temp_str, 10));
 
-  xTaskCreate(animation_tasks, "animation_tasks", 4096, NULL, 1, &animation_tasks_handle);
+  xTaskCreate(animation_tasks, "animation_tasks", 8192, NULL, 1, &animation_tasks_handle);
+  vTaskSuspend(animation_tasks_handle);
 
   
 }
@@ -362,26 +424,34 @@ void load_level(uint8_t lvl[][20]) {
       if (block_id == 2) { tiles++; }
       if (block_id == 4) { 
         puffle_x = col; puffle_y = row; 
+        target_tile_x = puffle_x; target_tile_y = puffle_y;
         tiles++;
       }
     }
   }
 
   // set/reset the game text
-  set_tiles_total(tiles);
-  incr_level_counter(); 
+  updates.incr_lvl = 1;
+  updates.set_total_tiles = tiles;
 
   // place the puffle
   spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN);
 
+
+
 }
 
 void loop(void) {
+  delay(1000); // crashes without the delay! previously it's had to be immediately before vTaskResume
 
   // load level 1
   setup_sprites(sprite_key, key_length);
   load_level(lvl_1);
   level_passed = 0;
+
+  
+  vTaskResume(animation_tasks_handle);
+
   puffle_available = 1;
   
   while (level_passed != 1) {
