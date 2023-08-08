@@ -122,7 +122,7 @@ void new_melting_tile(int new_x, int new_y) {
       melting_tiles[i].y = new_y;
       melting_tiles[i].lifetime = 0;
       melting_tiles[i].active = 1;
-      break; // IMPORTANT in case they are both 0!
+      break; // IMPORTANT in case multiple list entries are inactive!
     }
   }
 }
@@ -181,7 +181,7 @@ void animation_tasks(void *parameter) {
 
     // deal with any melting tiles
     for (int i=0; i<MAX_MELTING_TILES; i++) {
-      if (melting_tiles[i].active = 1) {
+      if (melting_tiles[i].active == 1) { Serial.println("Tile is melting");
 
         // active tile is still melting
         if (melting_tiles[i].lifetime < MELTING_TILE_LIFETIME)  {
@@ -342,7 +342,7 @@ Functions for setup
 
 void setup() {
 
-  Serial.begin(9600);
+  Serial.begin(230400);
   Serial.println();
   delay(50);
   tft.init();
