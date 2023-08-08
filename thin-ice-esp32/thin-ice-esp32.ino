@@ -14,14 +14,16 @@ TFT_eSPI    tft = TFT_eSPI();         // Declare object "tft"
 TaskHandle_t animation_tasks_handle;
 
 // pins for arrow buttons
-//const int btn_up_pin = 21;
-const int btn_down_pin = 21;
+const int btn_up_pin = 21; 
+const int btn_down_pin = 32;
 const int btn_left_pin = 22;
-//const int btn_right_pin = 21;
+const int btn_right_pin = 5;
 
 // flags for arrow buttons
+int btn_up_pressed = 0;
 int btn_down_pressed = 0;
 int btn_left_pressed = 0;
+int btn_right_pressed = 0;
 
 // some measurements used for displaying elements
 const int DISP_WIDTH = 480;
@@ -40,7 +42,7 @@ int points = 0;
 // game vars
 int puffle_x = 0;
 int puffle_y = 0;
-uint8_t (*lvl_map)[20]; // use to refer back to and redraw the tiles when the puffle moves
+uint8_t lvl_map[11][20]; // use to refer back to and redraw the tiles when the puffle moves
 
 // game and animation flags/vars
 int puffle_available = 0;
@@ -74,6 +76,7 @@ TFT_eSprite spr_red = TFT_eSprite(&tft);
 TFT_eSprite spr_border = TFT_eSprite(&tft);
 TFT_eSprite spr_puffle = TFT_eSprite(&tft);
 TFT_eSprite spr_water = TFT_eSprite(&tft);
+TFT_eSprite spr_current = TFT_eSprite(&tft);
 
 uint8_t key_length = 4;
 TFT_eSprite *sprite_key[] = { // only for the sprites that can appear on the map arrays
@@ -172,7 +175,9 @@ void animation_tasks(void *parameter) {
     // refresh the target tile to overwrite the puffle's current frame
     // if the puffle is stationary then this is the tile it's stood on
     // if the puffle is moving then this is the tile it's moving onto
-    spr_intl.pushSprite(target_tile_x*24, (target_tile_y*24)+BARS_OFFSET);
+    sprite_key[lvl_map[target_tile_y][target_tile_x]]->pushSprite(target_tile_x*24, (target_tile_y*24)+BARS_OFFSET);
+    //spr_intl.pushSprite(target_tile_x*24, (target_tile_y*24)+BARS_OFFSET);
+    Serial.println(lvl_map[puffle_y][puffle_x]);
 
     // deal with any melting tiles
     for (int i=0; i<MAX_MELTING_TILES; i++) {
@@ -219,10 +224,16 @@ void animation_tasks(void *parameter) {
       }
 
       // moving right
-      else if (slide_x > 0) {}
+      else if (slide_x > 0) {
+        spr_puffle.pushSprite((puffle_x*24)+(25-slide_x), (puffle_y*24)+BARS_OFFSET, TFT_GREEN); 
+        slide_x -= 1;
+      }
 
       // moving up
-      else if (slide_y < 0) {}
+      else if (slide_y < 0) {
+        spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET-(25+slide_y), TFT_GREEN); 
+        slide_y += 1;
+      }
 
       // moving down
       else if (slide_y > 0) { 
@@ -248,7 +259,7 @@ void animation_tasks(void *parameter) {
 
     // perform any stats changes
     if (updates.add_points > 0) { 
-      update_display(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, &points, updates.add_points);
+      update_display(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, &points, points+updates.add_points);
       updates.add_points = 0;
     }
     if (updates.incr_melted) {
@@ -278,57 +289,46 @@ void animation_tasks(void *parameter) {
 Functions for handling movement
 ***************************************************************************************/
 
+void up_pressed() {
+  bool success = arrow_pressed(puffle_x, puffle_y - 1);
+  if (success) { slide_y = -25; }
+}
+void down_pressed() {
+  bool success = arrow_pressed(puffle_x, puffle_y + 1);
+  if (success) { slide_y = 25; }
+}
 void left_pressed() {
-
-  if (puffle_available) {
-    if (lvl_map[puffle_y][puffle_x-1] == 1) { return; }
-    puffle_available = 0;
-
-    // the animation task will now constantly rewrite this tile under the puffle
-    target_tile_x = puffle_x - 1;
-    target_tile_y = puffle_y;
-
-    // the animation task will now handle this tile melting
-    new_melting_tile(puffle_x, puffle_y);
-    Serial.println("new melting tile added"); Serial.println(puffle_x); Serial.println(puffle_y);
-
-    // the animation task will now handle the puffle gradually moving down
-    slide_x = -25;
-
-    // game var stuff - anim task will handle this
-    updates.incr_melted = 1;
-    updates.add_points = 1;
-
-  }
-
+  bool success = arrow_pressed(puffle_x - 1, puffle_y);
+  if (success) { slide_x = -25; }
+}
+void right_pressed() {
+  bool success = arrow_pressed(puffle_x + 1, puffle_y);
+  if (success) { slide_x = 25; }
 }
 
-void down_pressed() {
+bool arrow_pressed(int new_x, int new_y) {
 
-  if (puffle_available) { // e.g. if user is holding down buttons while the puffle is moving, just ignore it
+  if (puffle_available && (lvl_map[new_y][new_x] != 1) && (lvl_map[new_y][new_x] != 10)) {
 
-    // check the propsed new tile - 1 is id of border block - can't move onto this block
-    if (lvl_map[puffle_y+1][puffle_x] == 1) { return; } 
-
-    // don't process further arrow key presses for now
-    // (the animation task will set puffle_available = 1 when the slide_y is 0 again)
     puffle_available = 0;
 
     // the animation task will now constantly rewrite this tile under the puffle
-    target_tile_x = puffle_x;
-    target_tile_y = puffle_y + 1;
+    target_tile_x = new_x;
+    target_tile_y = new_y;
 
     // the animation task will now handle this tile melting
     new_melting_tile(puffle_x, puffle_y);
+    lvl_map[puffle_y][puffle_x] = 10;
     Serial.println("new melting tile added"); Serial.println(puffle_x); Serial.println(puffle_y);
-
-    // the animation task will now handle the puffle gradually moving down
-    slide_y = 25;
 
     // game var stuff - anim task will handle this
     updates.incr_melted = 1;
     updates.add_points = 1;
 
+    return 1;
+
+  } else {
+    return 0;
   }
 
 }
@@ -350,7 +350,10 @@ void setup() {
   tft.fillScreen(TFT_BLACK);
 
   // arrow buttons
+  pinMode(btn_up_pin, INPUT);
   pinMode(btn_down_pin, INPUT);
+  pinMode(btn_left_pin, INPUT);
+  pinMode(btn_right_pin, INPUT);
 
   // bars and font setup
   tft.fillRect(0,0,DISP_WIDTH,BARS_OFFSET,LIGHT_BLUE); // top bar
@@ -395,6 +398,11 @@ void setup_sprites(TFT_eSprite *sprites[], size_t num_sprites) {
   spr_water.setSwapBytes(true);
   spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
 
+  spr_current.setColorDepth(16);
+  spr_current.createSprite(24, 24);
+  spr_current.setSwapBytes(true);
+  spr_current.pushImage(0, 0, 24, 24, (uint16_t *)intl_block_24x24);
+
   spr_oob.pushImage(0, 0, 24, 24, (uint16_t *)oob_block_24x24);
   spr_border.pushImage(0, 0, 24, 24, (uint16_t *)border_block_24x24);
   spr_intl.pushImage(0, 0, 24, 24, (uint16_t *)intl_block_24x24);
@@ -406,10 +414,10 @@ void setup_sprites(TFT_eSprite *sprites[], size_t num_sprites) {
 // TODO make this actually a pointer again
 void load_level(uint8_t lvl[][20]) {
 
-  // get the corresponding level map from the list of pointers to levels
-  lvl_map = lvl;
+  // we'll update this copy of the map to show where the water tiles are etc
+  memcpy(lvl_map, lvl_1, sizeof(uint8_t) * 11 * 20);
   
-  // load the tiles onto the screen, while counting the meltable tiles
+  // load the tiles onto the screen, while counting the meltable tiles (to display)
   int tiles = 0;
   for (int row=0; row<11; row++) {
     for (int col=0; col<20; col++) {
@@ -449,10 +457,18 @@ void loop(void) {
   puffle_available = 1;
   
   while (level_passed != 1) {
+
+    btn_up_pressed = digitalRead(btn_up_pin);
+    if (btn_up_pressed) { Serial.println("UP"); up_pressed(); }
+
     btn_down_pressed = digitalRead(btn_down_pin);
     if (btn_down_pressed) { down_pressed(); }
+
     btn_left_pressed = digitalRead(btn_left_pin);
     if (btn_left_pressed) { left_pressed(); }
+
+    btn_right_pressed = digitalRead(btn_right_pin);
+    if (btn_right_pressed) { right_pressed(); }
   }
 
 }
