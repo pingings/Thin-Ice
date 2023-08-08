@@ -459,7 +459,7 @@ void loop(void) {
   while (level_passed != 1) {
 
     btn_up_pressed = digitalRead(btn_up_pin);
-    if (btn_up_pressed) { Serial.println("UP"); up_pressed(); }
+    if (btn_up_pressed) { up_pressed(); }
 
     btn_down_pressed = digitalRead(btn_down_pin);
     if (btn_down_pressed) { down_pressed(); }
