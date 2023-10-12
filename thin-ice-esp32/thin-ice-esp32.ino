@@ -1,10 +1,10 @@
 #include "sprites.h"
 #include "levels.h"
+#include "water.h"
 #include <TFT_eSPI.h> 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-TFT_eSPI    tft = TFT_eSPI();         // Declare object "tft"
+#include <freertos/task.h>      
 
 #define BLACK         0x0000
 #define WHITE         0x217A5AD
@@ -26,6 +26,8 @@ int btn_left_pressed = 0;
 int btn_right_pressed = 0;
 
 // some measurements used for displaying elements
+const int ROWS = 11;
+const int COLS = 20;
 const int DISP_WIDTH = 480;
 const int DISP_HEIGHT = 320;
 const int BARS_OFFSET = 28; // height of the bars
@@ -40,17 +42,25 @@ int solved = 0;
 int points = 0;
 
 // game vars
-int puffle_x = 0;
+int water_head_x; // both set to the puffle's position at the start of each level, then updated each time he moves
+int water_head_y;
+int puffle_x = 0; // both updated on each full tile movement
 int puffle_y = 0;
-uint8_t lvl_map[11][20]; // use to refer back to and redraw the tiles when the puffle moves
 
 // game and animation flags/vars
 int puffle_available = 0;
 int target_tile_x = 0;
 int target_tile_y = 0;
 int level_passed = 0;
-int slide_x = 0;
-int slide_y = 0;
+int slide_val = 0;
+char slide_dir = 'N';
+
+// map tile ids
+const int ID_WATER = 10;
+const int ID_INTL = 0;
+const int ID_BORDER = 1;
+const int ID_OOB = 2;
+const int ID_RED = 3;
 
 // display refresh things
 int DISP_REFRESH_RATE = 10;
@@ -58,7 +68,8 @@ int puffle_anim_rate = 100;
 int puffle_anim_counter = 0;
 int puffle_speed = 80;
 int puffle_speed_counter = 0;
-const int MELTING_TILE_LIFETIME = 400; // overall time a tile takes to melt
+const int MELTING_TILE_LIFETIME = 400; // ms a tile takes to melt
+const int WAVE_PERIOD = 1500; // ms for water to go thru all its frames
 
 // for when the gameplay numbers are converted to strings so they can be displayed
 char temp_str[4];
@@ -68,8 +79,9 @@ int LVL_NUM_X = 105;
 int TILES_MELTED_X = 210;
 int TILES_TOTAL_X = 255;
 int SOLVED_X = 460;
-int POINTS_X = 460;
+int POINTS_X = 440;
 
+TFT_eSPI    tft = TFT_eSPI();  
 TFT_eSprite spr_oob = TFT_eSprite(&tft);
 TFT_eSprite spr_intl = TFT_eSprite(&tft);
 TFT_eSprite spr_red = TFT_eSprite(&tft);
@@ -77,6 +89,10 @@ TFT_eSprite spr_border = TFT_eSprite(&tft);
 TFT_eSprite spr_puffle = TFT_eSprite(&tft);
 TFT_eSprite spr_water = TFT_eSprite(&tft);
 TFT_eSprite spr_current = TFT_eSprite(&tft);
+TFT_eSprite spr_single = TFT_eSprite(&tft);
+TFT_eSprite spr_double_x = TFT_eSprite(&tft);
+TFT_eSprite spr_double_y = TFT_eSprite(&tft);
+TFT_eSprite spr_ice = TFT_eSprite(&tft);
 
 uint8_t key_length = 4;
 TFT_eSprite *sprite_key[] = { // only for the sprites that can appear on the map arrays
@@ -103,31 +119,8 @@ const uint16_t* puffle_frames[3] = {
 };
 int puffle_frame = 0;
 
-
-struct melting_tile {
-  int x;
-  int y;
-  int lifetime;
-  bool active;
-};
-const int MAX_MELTING_TILES = 2;
-struct melting_tile melting_tiles[MAX_MELTING_TILES] = {
-  {0,0,0,0},
-  {0,0,0,0},
-};
-void new_melting_tile(int new_x, int new_y) {
-  for (int i=0; i<MAX_MELTING_TILES; i++) {
-    if (melting_tiles[i].active == 0)  {
-      melting_tiles[i].x = new_x;
-      melting_tiles[i].y = new_y;
-      melting_tiles[i].lifetime = 0;
-      melting_tiles[i].active = 1;
-      break; // IMPORTANT in case multiple list entries are inactive!
-    }
-  }
-}
-
 // ALL lcd changed are handled by the animation tasks thread, otherwise it crashes
+// TODO do this better
 struct stat_updates {
   int add_points;
   bool incr_melted;
@@ -136,6 +129,31 @@ struct stat_updates {
   int set_total_tiles;
 };
 struct stat_updates updates = {0,0,0,0,0};
+
+/***************************************************************************************
+Water animation frames
+***************************************************************************************/
+
+const uint16_t* wave_stages[10] = {
+  water_1_24x24, water_3_24x24, water_5_24x24, 
+  water_7_24x24, water_9_24x24, water_11_24x24, 
+  water_13_24x24, water_15_24x24, water_17_24x24, 
+  water_19_24x24
+};
+
+/***************************************************************************************
+Struct which will be used for keeping track of the current level's tiles
+***************************************************************************************/
+
+struct map_tile {
+  int id;      // tile type id. if not water id then water_lifetime is irrelevant.
+  bool has_ice;
+  int water_lifetime; // default should be 0
+  int ice_lifetime; // default should be 0
+  int next_x; // default should be -1
+  int next_y; // default should be -1
+};
+struct map_tile active_map[ROWS][COLS];
 
 /***************************************************************************************
 Functions for updating the numbers  
@@ -154,7 +172,6 @@ void update_display(int x, int y, int *var, int new_val) {
   disp_write(x, y, itoa(*var, temp_str, 10));
 }
 
-
 /***************************************************************************************
 Function for handling animation
 On each refresh:
@@ -172,92 +189,119 @@ void animation_tasks(void *parameter) {
     puffle_anim_counter += DISP_REFRESH_RATE;
     //puffle_speed_counter += DISP_REFRESH_RATE;
 
-    // refresh the target tile to overwrite the puffle's current frame
-    // if the puffle is stationary then this is the tile it's stood on
-    // if the puffle is moving then this is the tile it's moving onto
-    sprite_key[lvl_map[target_tile_y][target_tile_x]]->pushSprite(target_tile_x*24, (target_tile_y*24)+BARS_OFFSET);
-    //spr_intl.pushSprite(target_tile_x*24, (target_tile_y*24)+BARS_OFFSET);
-    Serial.println(lvl_map[puffle_y][puffle_x]);
+    // queue the image for the tile that the puffle is currently stood on or moving from
+    spr_current.setSwapBytes(true);
+    spr_current.pushImage(0, 0, 24, 24, (uint16_t *)intl_block_24x24);
+    spr_current.setSwapBytes(false);
+    
+    // overlay the puffle on the current tile, with offset if he's moving
+    switch (slide_dir) {
+      case 'N': spr_puffle.pushToSprite(&spr_current, 0, slide_val, TFT_GREEN); break;
+      case 'S': spr_puffle.pushToSprite(&spr_current, 0, -slide_val, TFT_GREEN); break;
+      case 'E': spr_puffle.pushToSprite(&spr_current, -slide_val, 0, TFT_GREEN); break;
+      case 'W': spr_puffle.pushToSprite(&spr_current, slide_val, 0, TFT_GREEN); break;
+    }
+    
+    // push this current tile
+    spr_current.pushSprite(target_tile_x*24, (target_tile_y*24)+BARS_OFFSET);
 
-    // deal with any melting tiles
-    for (int i=0; i<MAX_MELTING_TILES; i++) {
-      if (melting_tiles[i].active == 1) { Serial.println("Tile is melting");
+    /***************************************************************************************
+    Handle all water tiles - all have a wave animation, potentially some breaking ice,
+    and potentially the puffle
+    ***************************************************************************************/
 
-        // active tile is still melting
-        if (melting_tiles[i].lifetime < MELTING_TILE_LIFETIME)  {
+    // starting with the most recent water tile,
+    int curr_x = water_head_x;
+    int curr_y = water_head_y;
+    struct map_tile *curr_tile;
+    float frame; // used for water (1-20) and then ice (1-6)
+    int frame_int;
 
-          // decide where in the melting process it is,
-          int stage = ((float)melting_tiles[i].lifetime/(float)MELTING_TILE_LIFETIME) * 6;
+    while (curr_x != -1) {
 
-          // load the correct frame and push it (over the water), increase lifetime
-          spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
-          spr_water.pushSprite(melting_tiles[i].x*24, (melting_tiles[i].y*24)+BARS_OFFSET);
-          spr_water.pushImage(0, 0, 24, 24, (uint16_t *)ice_break_stages[stage]);
-          spr_water.pushSprite(melting_tiles[i].x*24, (melting_tiles[i].y*24)+BARS_OFFSET, TFT_BLACK);
-          melting_tiles[i].lifetime += DISP_REFRESH_RATE;
-          
-        // active tile has actually finished melting
-        } else {
-          spr_water.pushImage(0, 0, 24, 24, (uint16_t *)water_24x24);
-          spr_water.pushSprite(melting_tiles[i].x*24, (melting_tiles[i].y*24)+BARS_OFFSET);
-          melting_tiles[i].active = 0;
+      curr_tile = &(active_map[curr_y][curr_x]);
+
+      // check if water - will only be false if puffle is still on the starting tile?
+      if (curr_tile->id == ID_WATER) {
+        curr_tile->water_lifetime %= WAVE_PERIOD;
+        frame = ( (float)curr_tile->water_lifetime / (float)WAVE_PERIOD ) * 10; // a number from 1 to 20
+        if ((int)(frame-DISP_REFRESH_RATE) != (int)frame) {
+          frame_int = (int) frame;
+          spr_current.setSwapBytes(true);
+          spr_current.pushImage(0, 0, 24, 24, (uint16_t*)wave_stages[frame_int]);
+          spr_current.setSwapBytes(false);
+          curr_tile->water_lifetime += DISP_REFRESH_RATE;
         }
       }
+
+      // check if ice is melting on this tile
+      if (curr_tile->has_ice) {
+        frame_int = ( (float)curr_tile->ice_lifetime / (float)MELTING_TILE_LIFETIME )  * 6;
+        Serial.println(frame);
+        spr_ice.pushImage(0, 0, 24, 24, (uint16_t*)ice_break_stages[frame_int]);
+        spr_ice.pushToSprite(&spr_current, 0, 0, TFT_BLACK);
+        curr_tile->ice_lifetime += DISP_REFRESH_RATE;
+
+        // check if has_ice should now be switched off
+        if (curr_tile->ice_lifetime > MELTING_TILE_LIFETIME) { curr_tile->has_ice = false; }
+
+      }
+
+      // check if puffle is on this tile and is moving 
+      // why shouldnt we push if he's not moving? i forgot?
+      if ( (curr_x == puffle_x) && (curr_y == puffle_y) && (slide_val > 0) ) {
+        switch (slide_dir) {
+            case 'N': spr_puffle.pushToSprite(&spr_current, 0, slide_val-24, TFT_GREEN); break;
+            case 'S': spr_puffle.pushToSprite(&spr_current, 0, 24-slide_val, TFT_GREEN); break;
+            case 'E': spr_puffle.pushToSprite(&spr_current, 24-slide_val, 0, TFT_GREEN); break;
+            case 'W': spr_puffle.pushToSprite(&spr_current, slide_val-24, 0, TFT_GREEN); break;
+          }
+      }
+
+      // finally, push the tile
+      spr_current.pushSprite(curr_x*24, curr_y*24+BARS_OFFSET);
+
+      // next water tile
+      curr_x = curr_tile->next_x;
+      curr_y = curr_tile->next_y;
+    
     }
 
-    // load the puffle's next frame if it's time
-    if (puffle_anim_counter >= puffle_anim_rate) {
-      puffle_frame = (puffle_frame+1) % 3;
-      spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_frames[puffle_frame]);
-      puffle_anim_counter = 0;
-    }
+    /***************************************************************************************
+    Decrement slide_val, and update the puffle's frame,  if it's time
+    ***************************************************************************************/
 
-
-    // place the puffle, factoring in any movement, if it's time
-    // might just need 3 instead of 5 clauses
     //if (puffle_speed_counter >= puffle_speed) {
 
-      // moving left
-      if (slide_x < 0) {
-        spr_puffle.pushSprite((puffle_x*24)-(25+slide_x), (puffle_y*24)+BARS_OFFSET, TFT_GREEN); 
-        slide_x += 1;
-      }
-
-      // moving right
-      else if (slide_x > 0) {
-        spr_puffle.pushSprite((puffle_x*24)+(25-slide_x), (puffle_y*24)+BARS_OFFSET, TFT_GREEN); 
-        slide_x -= 1;
-      }
-
-      // moving up
-      else if (slide_y < 0) {
-        spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET-(25+slide_y), TFT_GREEN); 
-        slide_y += 1;
-      }
-
-      // moving down
-      else if (slide_y > 0) { 
-        spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET+(25-slide_y), TFT_GREEN); 
-        slide_y -= 1;
-      }
-
-      else {
+      if (slide_val > 0) {
+        slide_val -= 2;
+      } else if (slide_val < 0) {
+        slide_val = 0;        
+      } else {
 
         // if there's no current movement, but the puffle position isn't the target position,
         // then it has only just reached its target, so we need to update the puffle's position
         if (puffle_x != target_tile_x) {puffle_x = target_tile_x;}
         if (puffle_y != target_tile_y) {puffle_y = target_tile_y;}
         if (!puffle_available) { puffle_available = 1; }
-        spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN); 
-        
+      }
+      
+      // load the puffle's next frame if it's time
+      if (puffle_anim_counter >= puffle_anim_rate) {
+        puffle_frame = (puffle_frame+1) % 3;
+        spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_frames[puffle_frame]);
+        puffle_anim_counter = 0;
+      
       }
 
     //  puffle_speed_counter = 0;
 
     //}
 
+    /***************************************************************************************
+    Stats changes
+    ***************************************************************************************/
 
-    // perform any stats changes
     if (updates.add_points > 0) { 
       update_display(POINTS_X, DISP_HEIGHT-TEXT_HEIGHT-TEXT_PADDING, &points, points+updates.add_points);
       updates.add_points = 0;
@@ -291,24 +335,24 @@ Functions for handling movement
 
 void up_pressed() {
   bool success = arrow_pressed(puffle_x, puffle_y - 1);
-  if (success) { slide_y = -25; }
+  if (success) { slide_dir = 'N'; slide_val = 25; }
 }
 void down_pressed() {
   bool success = arrow_pressed(puffle_x, puffle_y + 1);
-  if (success) { slide_y = 25; }
+  if (success) { slide_dir = 'S'; slide_val = 25; }
 }
 void left_pressed() {
   bool success = arrow_pressed(puffle_x - 1, puffle_y);
-  if (success) { slide_x = -25; }
+  if (success) { slide_dir = 'W'; slide_val = 25; }
 }
 void right_pressed() {
   bool success = arrow_pressed(puffle_x + 1, puffle_y);
-  if (success) { slide_x = 25; }
+  if (success) { slide_dir = 'E'; slide_val = 25; }
 }
 
 bool arrow_pressed(int new_x, int new_y) {
 
-  if (puffle_available && (lvl_map[new_y][new_x] != 1) && (lvl_map[new_y][new_x] != 10)) {
+  if (puffle_available && (active_map[new_y][new_x].id != ID_BORDER) && (active_map[new_y][new_x].id != ID_WATER)) {
 
     puffle_available = 0;
 
@@ -316,10 +360,15 @@ bool arrow_pressed(int new_x, int new_y) {
     target_tile_x = new_x;
     target_tile_y = new_y;
 
-    // the animation task will now handle this tile melting
-    new_melting_tile(puffle_x, puffle_y);
-    lvl_map[puffle_y][puffle_x] = 10;
-    Serial.println("new melting tile added"); Serial.println(puffle_x); Serial.println(puffle_y);
+    // the new tile will point to the current water head, and then will become the current water head
+    active_map[new_y][new_x].next_x = water_head_x;
+    active_map[new_y][new_x].next_y = water_head_y;
+    water_head_x = new_x;
+    water_head_y = new_y;
+
+    // the tile that the puffle is moving off is will now become water
+    active_map[puffle_y][puffle_x].id = ID_WATER;
+    active_map[puffle_y][puffle_x].has_ice = true;
 
     // game var stuff - anim task will handle this
     updates.incr_melted = 1;
@@ -333,12 +382,9 @@ bool arrow_pressed(int new_x, int new_y) {
 
 }
 
-
-
 /***************************************************************************************
 Functions for setup
 ***************************************************************************************/
-
 
 void setup() {
 
@@ -377,7 +423,6 @@ void setup() {
   xTaskCreate(animation_tasks, "animation_tasks", 8192, NULL, 1, &animation_tasks_handle);
   vTaskSuspend(animation_tasks_handle);
 
-  
 }
 
 // TODO sort all this out!!
@@ -390,8 +435,8 @@ void setup_sprites(TFT_eSprite *sprites[], size_t num_sprites) {
 
   spr_puffle.setColorDepth(16);
   spr_puffle.createSprite(24, 24);
-  spr_puffle.setSwapBytes(true);
   spr_puffle.pushImage(0, 0, 24, 24, (uint16_t *)puffle_1_24x24);
+  spr_puffle.setSwapBytes(true);
 
   spr_water.setColorDepth(16);
   spr_water.createSprite(24, 24);
@@ -403,30 +448,55 @@ void setup_sprites(TFT_eSprite *sprites[], size_t num_sprites) {
   spr_current.setSwapBytes(true);
   spr_current.pushImage(0, 0, 24, 24, (uint16_t *)intl_block_24x24);
 
+  spr_ice.setColorDepth(16);
+  spr_ice.createSprite(24, 24);
+  spr_ice.setSwapBytes(true);
+
+  spr_single.setColorDepth(16);
+  spr_single.createSprite(24, 24);
+
+  spr_double_x.setColorDepth(16);
+  spr_double_x.createSprite(24, 48);
+
   spr_oob.pushImage(0, 0, 24, 24, (uint16_t *)oob_block_24x24);
   spr_border.pushImage(0, 0, 24, 24, (uint16_t *)border_block_24x24);
   spr_intl.pushImage(0, 0, 24, 24, (uint16_t *)intl_block_24x24);
   spr_red.pushImage(0, 0, 24, 24, (uint16_t *)red_block_24x24);
+
+
+  
 }
 
+/***************************************************************************************
+Other functions and main loop
+***************************************************************************************/
 
 // given a level number, 
 // TODO make this actually a pointer again
-void load_level(uint8_t lvl[][20]) {
+void load_level(uint8_t lvl[][COLS]) {
 
-  // we'll update this copy of the map to show where the water tiles are etc
-  memcpy(lvl_map, lvl_1, sizeof(uint8_t) * 11 * 20);
-  
-  // load the tiles onto the screen, while counting the meltable tiles (to display)
+  // load the tiles onto the screen, while counting the meltable tiles
   int tiles = 0;
-  for (int row=0; row<11; row++) {
-    for (int col=0; col<20; col++) {
+  for (int row=0; row<ROWS; row++) {
+    for (int col=0; col<COLS; col++) {
+
       int block_id = lvl[row][col];
-      sprite_key[block_id]->pushSprite(col*24, (row*24)+BARS_OFFSET);
-      if (block_id == 2) { tiles++; }
-      if (block_id == 4) { 
-        puffle_x = col; puffle_y = row; 
-        target_tile_x = puffle_x; target_tile_y = puffle_y;
+
+      // "reset" each active_map tile
+      active_map[row][col].id = block_id;
+      active_map[row][col].has_ice = false;
+      active_map[row][col].water_lifetime = 0;
+      active_map[row][col].ice_lifetime = 0;
+      active_map[row][col].next_x = -1;
+      active_map[row][col].next_y = -1;
+
+      sprite_key[block_id]->pushSprite(col*24, row*24+BARS_OFFSET);
+      if (block_id == 2) { 
+        tiles++; 
+      } else if (block_id == 4) { 
+        puffle_x = col; puffle_y = row; // puffle will be spawned here
+        water_head_x = col; water_head_y = row; // this will be our first water tile
+        target_tile_x = puffle_x; target_tile_y = puffle_y; // bc the puffle isn't moving yet
         tiles++;
       }
     }
@@ -438,8 +508,6 @@ void load_level(uint8_t lvl[][20]) {
 
   // place the puffle
   spr_puffle.pushSprite(puffle_x*24, (puffle_y*24)+BARS_OFFSET, TFT_GREEN);
-
-
 
 }
 
